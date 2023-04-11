@@ -16,6 +16,9 @@
 
 package com.phuongheh.samples.portfolio.web.context;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.phuongheh.samples.portfolio.service.Trade;
 import com.phuongheh.samples.portfolio.web.support.TestPrincipal;
 import org.junit.Before;
 import org.junit.Test;
@@ -39,10 +42,12 @@ import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
+import org.springframework.test.util.JsonPathExpectationsHelper;
 import org.springframework.web.socket.config.annotation.AbstractWebSocketMessageBrokerConfigurer;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
 
+import java.nio.charset.Charset;
 import java.util.HashMap;
 import java.util.List;
 
@@ -79,7 +84,7 @@ public class ContextPortfolioControllerTests {
     }
 
     @Test
-    public void getPositions(){
+    public void getPositions() throws InterruptedException {
         StompHeaderAccessor headers = StompHeaderAccessor.create(StompCommand.SUBSCRIBE);
         headers.setSubscriptionId("0");
         headers.setDestination("/app/positions");
@@ -97,6 +102,43 @@ public class ContextPortfolioControllerTests {
         StompHeaderAccessor replyHeaders = StompHeaderAccessor.wrap(reply);
         assertEquals("0", replyHeaders.getSessionId());
         assertEquals("0", replyHeaders.getSubscriptionId());
+        assertEquals("/app/positions", replyHeaders.getDestination());
+
+        String json = new String((byte[]) reply.getPayload(), Charset.forName("UTF-8"));
+        new JsonPathExpectationsHelper("$[0].company").assertValue(json, "Citrix System, Inc.");
+        new JsonPathExpectationsHelper("$[1].company").assertValue(json, "Dell Inc.");
+        new JsonPathExpectationsHelper("$[2].company").assertValue(json, "Microsoft");
+        new JsonPathExpectationsHelper("$[3].company").assertValue(json, "Oracle");
+    }
+
+    @Test
+    public void executeTrade() throws JsonProcessingException, InterruptedException {
+        Trade trade = new Trade();
+        trade.setAction(Trade.TradeAction.Buy);
+        trade.setTicker("DELL");
+        trade.setShares(25);
+
+        byte[] payload = new ObjectMapper().writeValueAsBytes(trade);
+
+        StompHeaderAccessor headers = StompHeaderAccessor.create(StompCommand.SEND);
+        headers.setDestination("/app/trade");
+        headers.setSessionId("0");
+        headers.setUser(new TestPrincipal("fabrice"));
+        headers.setSessionAttributes(new HashMap<String, Object>());
+        Message<byte[]> message = MessageBuilder.createMessage(payload, headers.getMessageHeaders());
+
+        this.brokerChannelInterceptor.setIncludedDestination("/user/**");
+        this.clientOutboundChannel.send(message);
+
+        Message<?> positionUpdate = this.brokerChannelInterceptor.awaitMessage(5);
+        assertNotNull(positionUpdate);
+
+        StompHeaderAccessor positionUpdateHeaders = StompHeaderAccessor.wrap(positionUpdate);
+        assertEquals("/user/fabrice/queue/position-updates", positionUpdateHeaders.getDestination());
+
+        String json = new String((byte[]) positionUpdate.getPayload(), Charset.forName("UTF-8"));
+        new JsonPathExpectationsHelper("$.ticker").assertValue(json, "DELL");
+        new JsonPathExpectationsHelper("$.shares").assertValue(json, 75);
     }
 
     @Configuration
